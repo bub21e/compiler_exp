@@ -1,7 +1,10 @@
 package cn.edu.hitsz.compiler.asm;
 
+import cn.edu.hitsz.compiler.ir.IRImmediate;
+import cn.edu.hitsz.compiler.ir.IRValue;
 import cn.edu.hitsz.compiler.ir.IRVariable;
 import cn.edu.hitsz.compiler.ir.Instruction;
+import cn.edu.hitsz.compiler.ir.InstructionKind;
 
 import java.util.List;
 import java.util.ArrayList;
@@ -36,6 +39,83 @@ public class AssemblyGenerator {
      */
     public void loadIR(List<Instruction> originInstructions) {
         // TODO: 读入前端提供的中间代码并生成所需要的信息
+
+        for(Instruction instruction : originInstructions) {
+    
+            InstructionKind kind = instruction.getKind();
+
+            // 排除 UnaryOp
+            if(kind.isUnary()) {
+                this.instructions.add(instruction);
+                //处理 return
+                if(kind.isReturn()) {
+                    return;
+                }               
+                continue;
+            } 
+
+            // 排除 左操作数不是立即数
+            if(instruction.getLHS().isIRVariable()) {
+                this.instructions.add(instruction);
+                continue;
+            }   
+
+            // 以下左操作数都是立即数
+            // 合并 右操作数也是立即数
+            if(instruction.getRHS().isImmediate()) {
+                
+                IRImmediate newValue;
+
+                IRImmediate leftValue = (IRImmediate)instruction.getRHS();
+                IRImmediate rightValue = (IRImmediate)instruction.getRHS();
+                
+                // 获取新值
+                int value = switch (instruction.getKind()) {
+                    case ADD -> {
+                        yield leftValue.getValue() + rightValue.getValue();
+                    }
+                    case SUB -> {
+                        yield leftValue.getValue() - rightValue.getValue();
+                    }
+                    case MUL -> {
+                        yield leftValue.getValue() * rightValue.getValue();
+                    }
+                    default -> {
+                        System.out.println("error occured loading IR.");
+                        yield 0;
+                    }
+                };
+
+                newValue = IRImmediate.of(value);
+                instructions.add(Instruction.createMov(instruction.getResult(),newValue));
+                
+                continue;
+            }
+
+            // 右操作数不是立即数
+            switch (kind) {
+                
+                // 调整 立即数乘法和左立即数减法
+                // 用寄存器代替立即数
+                case MUL -> {
+                    IRVariable temp = IRVariable.temp();
+                    instructions.add(Instruction.createMov(temp, instruction.getLHS()));
+                    instructions.add(Instruction.createMul(instruction.getResult(), temp, instruction.getRHS()));
+                }
+                case SUB -> {
+                    IRVariable temp = IRVariable.temp();
+                    instructions.add(Instruction.createMov(temp, instruction.getLHS()));
+                    instructions.add(Instruction.createSub(instruction.getResult(), temp, instruction.getRHS()));
+                }
+                // 调整 一般左立即数
+                case ADD -> {
+                    instructions.add(Instruction.createAdd(instruction.getResult(), instruction.getRHS(), instruction.getLHS()));
+                }
+                default -> {
+                    System.out.println("error occured loading IR.");
+                }
+            }
+        }
     }
 
 
@@ -70,6 +150,8 @@ public class AssemblyGenerator {
             e.printStackTrace();
         }
     }
+
+    List<Instruction> instructions = new ArrayList<>(); // 预处理后的instruction
     
     List<String> assemblyOutput = new ArrayList<>(); // 生成的汇编代码
     BMap<Integer, IRVariable> regMap = new BMap<>(); // 寄存器映射关系
