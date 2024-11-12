@@ -1,9 +1,13 @@
 package cn.edu.hitsz.compiler.asm;
 
-import cn.edu.hitsz.compiler.NotImplementedException;
+import cn.edu.hitsz.compiler.ir.IRVariable;
 import cn.edu.hitsz.compiler.ir.Instruction;
 
 import java.util.List;
+import java.util.ArrayList;
+import java.io.IOException;
+import java.io.BufferedWriter;
+import java.io.FileWriter;
 
 
 /**
@@ -56,6 +60,18 @@ public class AssemblyGenerator {
      */
     public void dump(String path) {
         // TODO: 输出汇编代码到文件
+        
+        try (BufferedWriter writer = new BufferedWriter(new FileWriter((path)))){ // try-with-resources
+            for(String output : assemblyOutput) {
+                writer.write(output);
+                writer.newLine();
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
     }
+    
+    List<String> assemblyOutput = new ArrayList<>(); // 生成的汇编代码
+    BMap<Integer, IRVariable> regMap = new BMap<>(); // 寄存器映射关系
 }
 
