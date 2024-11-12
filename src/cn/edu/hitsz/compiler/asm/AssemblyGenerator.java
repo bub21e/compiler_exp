@@ -118,6 +118,14 @@ public class AssemblyGenerator {
         }
     }
 
+    // 处理 寄存器分配 和 栈的调度
+    public Integer getReg() {
+
+    }
+
+    public void setReg(Integer key, IRVariable value) {
+
+    }
 
     /**
      * 执行代码生成.
@@ -130,6 +138,62 @@ public class AssemblyGenerator {
      */
     public void run() {
         // TODO: 执行寄存器分配与代码生成
+        // 从 Instructions 里读取中间代码，生成汇编代码字符串输入 assemblyOutput ,同时管理 regMap 映射关系
+
+        for (Instruction instruction : instructions) 
+        {   
+            StringBuffer builder = new StringBuffer();
+            switch (instruction.getKind()) {
+                case MOV -> {
+
+                    if(instruction.getFrom().isImmediate()) {
+                        // 获取 result 的寄存器
+                        Integer reg = regMap.getByValue((IRVariable) instruction.getResult());
+                        //
+                        
+                        builder.append("li t" + reg + ", " + ((IRImmediate) instruction.getFrom()).getValue());
+                    } else {
+                        // 获取 instruction 中 result 和 from 的寄存器
+                        Integer leftReg,rightReg;
+                        leftReg = regMap.getByValue((IRVariable) instruction.getResult());
+                        rightReg = regMap.getByValue((IRVariable) instruction.getFrom());
+                        // 
+
+                        builder.append("addi t" + leftReg + ", t" + rightReg + ", 0");
+                    }
+
+                    assemblyOutput.add(builder.toString());
+
+                }
+                case ADD -> {
+
+                } 
+                case SUB -> {
+
+                }
+                case MUL -> {
+
+                }
+                case RET -> {
+
+                    if(instruction.getReturnValue().isImmediate()) {
+
+                        builder.append("li a0, " + ((IRImmediate) instruction.getReturnValue()).getValue());
+                    } else {
+                        Integer reg = regMap.getByValue((IRVariable) instruction.getReturnValue());
+
+                        builder.append("addi a0, t" + reg + ", 0");
+                    }
+
+                    assemblyOutput.add(builder.toString());
+                    assemblyOutput.add("ret");
+                    
+                }
+                default -> {
+                    System.out.println("error occured running.");
+                }
+            }
+        }
     }
 
 
