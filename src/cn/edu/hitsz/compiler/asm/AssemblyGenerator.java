@@ -7,11 +7,12 @@ import cn.edu.hitsz.compiler.ir.Instruction;
 import cn.edu.hitsz.compiler.ir.InstructionKind;
 
 import java.util.List;
+import java.util.ListIterator;
 import java.util.ArrayList;
 import java.util.LinkedList;
 import java.util.Map;
 import java.util.HashMap;
-import java.util.HashSet;
+
 import java.io.IOException;
 import java.io.BufferedWriter;
 import java.io.FileWriter;
@@ -122,13 +123,65 @@ public class AssemblyGenerator {
         }
     }
 
-    // 处理 寄存器分配 和 栈的调度
+    // 获取可用的寄存器编号
+    // 如果 有未使用的或者不再使用的，直接返回
+    // 否则 依据LRU置换
     public Integer getReg() {
-        
+
+        ListIterator<Integer> it = regList.listIterator();
+        while (it.hasNext()) {
+            
+            Integer reg = it.next();
+            String varName = regMap.getByKey(reg);
+            
+            // var 不存在 , 不再使用
+            if (varName == null || referenceOfVar.get(varName) == 0) {
+                return reg;
+            }
+
+        }
+        // 尾部 最不常用的
+        return regList.getLast();
     }
 
-    public void setReg(Integer key, String value) {
+    // 将变量的值载入目标寄存器
+    public void setReg(Integer reg, String value) {
 
+        Integer exist = regMap.getByValue(value);
+
+        String replacedVar = regMap.getByKey(reg); // 被替换的变量
+        
+        // not exist 变量初始化
+        if (exist == null) {
+            // var 不存在 , 不再使用
+            if (replacedVar == null || referenceOfVar.get(replacedVar) == 0) {
+                regMap.replace(reg, value);
+                return;
+            }
+            // var 再使用
+            assemblyOutput.add("sw t" + reg + ", " + stackPointer + "(x0)");
+            regMap.replace(stackPointer * -1, replacedVar);
+            stackPointer += 4;
+            
+        }
+        // exist 变量在栈中
+        else {
+            // 把堆栈中的值赋给 a0
+            int offset = exist * -1;
+
+            assemblyOutput.add("lw a0, " + offset + "(x0)");
+            
+            if (replacedVar != null && referenceOfVar.get(replacedVar) > 0) {
+                // 把 reg中的值存到堆栈
+                assemblyOutput.add("sw t" + reg + ", " + offset + "(x0)");
+                regMap.replace(exist, replacedVar);
+            }
+            
+            // 把 a0 中的值存到reg
+            assemblyOutput.add("addi t" + reg + ", a0, 0");
+        }
+            
+        regMap.replace(reg, value);
     }
 
     /**
@@ -142,6 +195,8 @@ public class AssemblyGenerator {
      */
     public void run() {
         // TODO: 执行寄存器分配与代码生成
+
+        assemblyOutput.add("addi x0, x0, -40");
         
         // 获取变量待读取次数
         for (Instruction instruction : instructions) {
@@ -172,15 +227,14 @@ public class AssemblyGenerator {
                         String resultName = ((IRVariable) instruction.getResult()).getName();
                         Integer reg = regMap.getByValue(resultName);
 
-                        // 处理写寄存器获取失败
-                        if (reg == null) {
+                        // 处理写寄存器获取失败 , 变量初始化或变量在栈中
+                        if (reg == null || reg < 0) {
                             reg = getReg();
                             // 维护 regMap
                             setReg(reg, resultName);
                         }
                         
                         builder.append("li t" + reg + ", " + ((IRImmediate) instruction.getFrom()).getValue());
-                        referencedVar.add(resultName);
 
                     } else {
 
@@ -188,24 +242,25 @@ public class AssemblyGenerator {
                         String resutlName = ((IRVariable) instruction.getResult()).getName(), 
                             fromName = ((IRVariable) instruction.getFrom()).getName();
 
-                        Integer leftReg = regMap.getByValue(resutlName), 
-                            rightReg = regMap.getByValue(fromName);
+                        Integer resultReg = regMap.getByValue(resutlName), 
+                            fromReg = regMap.getByValue(fromName);
                         
-                        if (leftReg == null) {
-                            leftReg = getReg();
-                            setReg(rightReg, resutlName);
-                        }
                         // 从堆栈中取值
-                        if (referencedVar.contains(fromName) && rightReg == null) {
-
+                        if (fromReg < 0) {
+                            fromReg = getReg();
+                            setReg(fromReg, fromName);
                         }
-
                         // 读维护
-                        regList.push(regList.remove(regList.indexOf(rightReg)));
+                        regList.push(regList.remove(regList.indexOf(fromReg)));
+
+                        if (resultReg == null || resultReg < 0) {
+                            resultReg = getReg();
+                            setReg(resultReg, resutlName);
+                        }
+                        
                         referenceOfVar.put(fromName,referenceOfVar.getOrDefault(fromName,0)-1);
 
-                        builder.append("addi t" + leftReg + ", t" + rightReg + ", 0");
-                        referencedVar.add(resutlName);
+                        builder.append("addi t" + resultReg + ", t" + fromReg + ", 0");
                     }
 
                     assemblyOutput.add(builder.toString());
@@ -226,9 +281,13 @@ public class AssemblyGenerator {
 
                         builder.append("li a0, " + ((IRImmediate) instruction.getReturnValue()).getValue());
                     } else {
-                        Integer reg = regMap.getByValue(((IRVariable) instruction.getReturnValue()).getName());
-                        //
-
+                        String returnValueName = ((IRVariable) instruction.getReturnValue()).getName();
+                        Integer reg = regMap.getByValue(returnValueName);
+                        if (reg < 0) {
+                            reg = getReg();
+                            setReg(reg, returnValueName);
+                        }
+                     
                         builder.append("addi a0, t" + reg + ", 0");
                     }
 
@@ -262,14 +321,15 @@ public class AssemblyGenerator {
         }
     }
 
-    List<Instruction> instructions = new ArrayList<>(); // 预处理后的 instruction
+    private List<Instruction> instructions = new ArrayList<>(); // 预处理后的 instruction
 
-    BMap<Integer, String> regMap = new BMap<>(); // 寄存器 映射关系:getReg时维护
-    LinkedList<Integer> regList = new LinkedList<>(); // 寄存器 链表:读时维护
+    private BMap<Integer, String> regMap = new BMap<>(); // 寄存器 映射关系:getReg时维护
+    private LinkedList<Integer> regList = new LinkedList<>(); // 寄存器 链表:读时维护
     
-    Map<String, Integer> referenceOfVar = new HashMap<>(); // 变量 待读取次数：读时维护
-    HashSet<String> referencedVar = new HashSet<>(); // 变量 已被赋值：写时维护
+    private Map<String, Integer> referenceOfVar = new HashMap<>(); // 变量 待读取次数：读时维护
 
-    List<String> assemblyOutput = new ArrayList<>(); // 生成的汇编代码
+    private int stackPointer = 4;    
+
+    private List<String> assemblyOutput = new ArrayList<>(); // 生成的汇编代码
 }
 
