@@ -50,7 +50,7 @@ public class AssemblyGenerator {
             InstructionKind kind = instruction.getKind();
 
             // 排除 UnaryOp
-            if(kind.isUnary()) {
+            if(kind.isUnary() || kind.isReturn()) {
                 this.instructions.add(instruction);
                 //处理 return
                 if(kind.isReturn()) {
@@ -146,39 +146,35 @@ public class AssemblyGenerator {
 
     // 将变量的值载入目标寄存器
     public void setReg(Integer reg, String value) {
-
         Integer exist = regMap.getByValue(value);
-
-        String replacedVar = regMap.getByKey(reg); // 被替换的变量
+        String replacedVar = regMap.getByKey(reg);
         
-        // not exist 变量初始化
         if (exist == null) {
             // var 不存在 , 不再使用
             if (replacedVar == null || referenceOfVar.get(replacedVar) == 0) {
                 regMap.replace(reg, value);
                 return;
             }
-            // var 再使用
-            assemblyOutput.add("sw t" + reg + ", " + stackPointer + "(x0)");
+            // 保存到栈上时使用sp
+            assemblyOutput.add("sw t" + reg + ", " + stackPointer + "(sp)");
             regMap.replace(stackPointer * -1, replacedVar);
             stackPointer += 4;
             
         }
         // exist 变量在栈中
         else {
-            // 把堆栈中的值赋给 a0
-            int offset = exist * -1;
-
-            assemblyOutput.add("lw a0, " + offset + "(x0)");
-            
-            if (replacedVar != null && referenceOfVar.get(replacedVar) > 0) {
-                // 把 reg中的值存到堆栈
-                assemblyOutput.add("sw t" + reg + ", " + offset + "(x0)");
-                regMap.replace(exist, replacedVar);
+            if (exist < 0) {
+                int offset = exist * -1;
+                // 从栈上加载时使用sp
+                assemblyOutput.add("lw a0, " + offset + "(sp)");
+                
+                if (replacedVar != null && referenceOfVar.get(replacedVar) > 0) {
+                    assemblyOutput.add("sw t" + reg + ", " + offset + "(sp)");
+                    regMap.replace(exist, replacedVar);
+                }
+                
+                assemblyOutput.add("addi t" + reg + ", a0, 0");
             }
-            
-            // 把 a0 中的值存到reg
-            assemblyOutput.add("addi t" + reg + ", a0, 0");
         }
             
         regMap.replace(reg, value);
@@ -194,10 +190,15 @@ public class AssemblyGenerator {
      * 成前完成建立, 与代码生成的过程相关的信息可自行设计数据结构进行记录并动态维护.
      */
     public void run() {
+        assemblyOutput.add(".text");
+        assemblyOutput.add(".global main");
+        assemblyOutput.add("main:");
+        
+        // 设置栈指针，为局部变量分配空间
+        assemblyOutput.add("addi sp, sp, -64");  // 使用sp而不是x0
+        
         // TODO: 执行寄存器分配与代码生成
 
-        assemblyOutput.add("addi x0, x0, -40");
-        
         // 获取变量待读取次数
         for (Instruction instruction : instructions) {
             List<IRValue> values = instruction.getOperands();
@@ -267,18 +268,132 @@ public class AssemblyGenerator {
 
                 }
                 case ADD -> {
-
-                } 
+                    String resultName = ((IRVariable) instruction.getResult()).getName();
+                    String lhsName = ((IRVariable) instruction.getLHS()).getName();
+                    
+                    Integer resultReg = regMap.getByValue(resultName);
+                    Integer lhsReg = regMap.getByValue(lhsName);
+                    
+                    // 处理左操作数
+                    if (lhsReg < 0) {
+                        lhsReg = getReg();
+                        setReg(lhsReg, lhsName);
+                    }
+                    regList.push(regList.remove(regList.indexOf(lhsReg)));
+                    
+                    // 处理结果寄存器
+                    if (resultReg == null || resultReg < 0) {
+                        resultReg = getReg();
+                        setReg(resultReg, resultName);
+                    }
+                    
+                    referenceOfVar.put(lhsName, referenceOfVar.getOrDefault(lhsName, 0) - 1);
+                    
+                    // 生成汇编代码
+                    if (instruction.getRHS().isImmediate()) {
+                        // 变量 + 立即数
+                        builder.append("addi t" + resultReg + ", t" + lhsReg + ", " + 
+                            ((IRImmediate)instruction.getRHS()).getValue());
+                    } else {
+                        // 变量 + 变量
+                        String rhsName = ((IRVariable) instruction.getRHS()).getName();
+                        Integer rhsReg = regMap.getByValue(rhsName);
+                        if (rhsReg < 0) {
+                            rhsReg = getReg();
+                            setReg(rhsReg, rhsName);
+                        }
+                        regList.push(regList.remove(regList.indexOf(rhsReg)));
+                        referenceOfVar.put(rhsName, referenceOfVar.getOrDefault(rhsName, 0) - 1);
+                        
+                        builder.append("add t" + resultReg + ", t" + lhsReg + ", t" + rhsReg);
+                    }
+                    assemblyOutput.add(builder.toString());
+                }
                 case SUB -> {
-
+                    String resultName = ((IRVariable) instruction.getResult()).getName();
+                    String lhsName = ((IRVariable) instruction.getLHS()).getName();
+                    
+                    Integer resultReg = regMap.getByValue(resultName);
+                    Integer lhsReg = regMap.getByValue(lhsName);
+                    
+                    // 处理左操作数
+                    if (lhsReg < 0) {
+                        lhsReg = getReg();
+                        setReg(lhsReg, lhsName);
+                    }
+                    regList.push(regList.remove(regList.indexOf(lhsReg)));
+                    
+                    // 处理结果寄存器
+                    if (resultReg == null || resultReg < 0) {
+                        resultReg = getReg();
+                        setReg(resultReg, resultName);
+                    }
+                    
+                    referenceOfVar.put(lhsName, referenceOfVar.getOrDefault(lhsName, 0) - 1);
+                    
+                    if (instruction.getRHS().isImmediate()) {
+                        // 变量 - 立即数
+                        builder.append("addi t" + resultReg + ", t" + lhsReg + ", " + 
+                            (-((IRImmediate)instruction.getRHS()).getValue()));
+                    } else {
+                        // 变量 - 变量
+                        String rhsName = ((IRVariable) instruction.getRHS()).getName();
+                        Integer rhsReg = regMap.getByValue(rhsName);
+                        if (rhsReg < 0) {
+                            rhsReg = getReg();
+                            setReg(rhsReg, rhsName);
+                        }
+                        regList.push(regList.remove(regList.indexOf(rhsReg)));
+                        referenceOfVar.put(rhsName, referenceOfVar.getOrDefault(rhsName, 0) - 1);
+                        
+                        builder.append("sub t" + resultReg + ", t" + lhsReg + ", t" + rhsReg);
+                    }
+                    assemblyOutput.add(builder.toString());
                 }
                 case MUL -> {
-
+                    String resultName = ((IRVariable) instruction.getResult()).getName();
+                    String lhsName = ((IRVariable) instruction.getLHS()).getName();
+                    
+                    Integer resultReg = regMap.getByValue(resultName);
+                    Integer lhsReg = regMap.getByValue(lhsName);
+                    
+                    // 处理左操作数
+                    if (lhsReg < 0) {
+                        lhsReg = getReg();
+                        setReg(lhsReg, lhsName);
+                    }
+                    regList.push(regList.remove(regList.indexOf(lhsReg)));
+                    
+                    // 处理结果寄存器
+                    if (resultReg == null || resultReg < 0) {
+                        resultReg = getReg();
+                        setReg(resultReg, resultName);
+                    }
+                    
+                    referenceOfVar.put(lhsName, referenceOfVar.getOrDefault(lhsName, 0) - 1);
+                    
+                    if (instruction.getRHS().isImmediate()) {
+                        // 变量 * 立即数
+                        Integer tempReg = getReg();
+                        builder.append("li t" + tempReg + ", " + ((IRImmediate)instruction.getRHS()).getValue());
+                        builder.append("\nmul t" + resultReg + ", t" + lhsReg + ", t" + tempReg);
+                    } else {
+                        // 变量 * 变量
+                        String rhsName = ((IRVariable) instruction.getRHS()).getName();
+                        Integer rhsReg = regMap.getByValue(rhsName);
+                        if (rhsReg < 0) {
+                            rhsReg = getReg();
+                            setReg(rhsReg, rhsName);
+                        }
+                        regList.push(regList.remove(regList.indexOf(rhsReg)));
+                        referenceOfVar.put(rhsName, referenceOfVar.getOrDefault(rhsName, 0) - 1);
+                        
+                        builder.append("mul t" + resultReg + ", t" + lhsReg + ", t" + rhsReg);
+                    }
+                    assemblyOutput.add(builder.toString());
                 }
                 case RET -> {
-
                     if(instruction.getReturnValue().isImmediate()) {
-
                         builder.append("li a0, " + ((IRImmediate) instruction.getReturnValue()).getValue());
                     } else {
                         String returnValueName = ((IRVariable) instruction.getReturnValue()).getName();
@@ -287,13 +402,13 @@ public class AssemblyGenerator {
                             reg = getReg();
                             setReg(reg, returnValueName);
                         }
-                     
                         builder.append("addi a0, t" + reg + ", 0");
                     }
-
-                    assemblyOutput.add(builder.toString());
-                    assemblyOutput.add("ret");
                     
+                    assemblyOutput.add(builder.toString());
+                    // 恢复栈指针
+                    assemblyOutput.add("addi sp, sp, 64");
+                    // assemblyOutput.add("ret");
                 }
                 default -> {
                     System.out.println("error occured running.");
